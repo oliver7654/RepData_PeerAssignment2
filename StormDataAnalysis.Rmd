@@ -1,0 +1,262 @@
+---
+title: "Reproducible Research: Peer Assessment 2"
+output:
+  html_document:
+    keep_md: true
+---
+
+# Impact of Weather Events on Public Health and Economy
+
+## Abstract
+
+In this document, the impact of weather events on public health and economy across
+the United State is evaluated.
+The analysis is done based on the NOAA Storm Database.
+First an exploratory analysis of the data is done,
+to understand how to reduce the amount of available data
+without compromising the expressiveness with respect to the addressed objectives.
+From that, a data processing strategy is derived.
+Eventually the impact of weather events on public health and economy are examined,
+showing that tornados have the greatest impact on public health,
+and floods on economy.
+
+## Prerequisites
+
+```{r load_libraries}
+library(dplyr)
+library(stringr)
+```
+
+## Raw Data
+
+The raw dataset is downloaded from the URL provided with the Course Assignment: [StormData.csv.bz2](https://d396qusza40orc.cloudfront.net/repdata%2Fdata%2FStormData.csv.bz2)
+Most of the columns of the datasets can be discared as they are not relevant for
+understanding the relationship between weather events and poulation health and economy across USA.
+Data with an unknown weather event have been removed.
+
+```{r download_and_extract}
+if (!dir.exists("tmp")) {
+  dir.create("tmp")
+}
+raw_data_file_path <- file.path("tmp", "StormData.csv.bz2")
+if (!file.exists(raw_data_file_path)) {
+  download.file("https://d396qusza40orc.cloudfront.net/repdata%2Fdata%2FStormData.csv.bz2",
+    raw_data_file_path
+  )
+}
+```
+
+```{r load_data, cache = TRUE}
+raw_data <- as_tibble(read.csv(raw_data_file_path))
+```
+
+## Exploratory Analysis
+
+### Data columns
+
+The dataset contains a lot of columns, but only some of them seem to be relevant
+for the present discussion.
+
+```{r names}
+names(raw_data)
+```
+Only the following variables seem to be relevant:
+
+- `EVTYPE`: the type of weather event
+- `FATALITIES`: The number of deaths caused by a weather event
+- `INJURIES`: The number of injuries caused by a weather event
+- `PROPDMG`: The estimated amount of damage to property incurred by the weather event
+- `PROPDMGEXP`: The unit of the property damage measurement
+- `CROPDMG`: The estimated amount of damage to crops incurred by the weather event
+- `CROPDMGEXP`: The unit of the crop damage measurement
+
+### Weather Event Types
+
+There is a large number of different values in the `EVTYPE` column.
+The values do not seem to be normalized:
+
+ - some values seem to be invalid or not useful (e.g. `?`, `Summary August 10`),
+ - some values are representing the same weather event (e.g. `TSTM WIND` and `THUNDERSTORM WINDS`).
+
+> For details see `Appendix - List of Event Types`.
+
+To avoid a normalization of the entire set of given event types, it makes sense to
+take a look at the overall distribution of event types,
+to find out if it is safe to focus on just a smaller subset of the events.
+
+``` {r distribution_of_weather_events}
+N <- dim(raw_data)[1]
+by_evt_count <- raw_data %>%
+  group_by(EVTYPE) %>%
+  summarise(n = n()) %>%
+  arrange(desc(n))
+with(by_evt_count,
+  plot(cumsum(n[1:10] / N), ylab = "Cumulative Sum of Events", xlab = "Weather Event Index")
+)
+```
+
+**Distribution of Event Types**: The top ten events with highest frequency
+  cover nearly 90% of the overall cases.
+
+The top-ten event types contain some redundant values, i.e. different values
+for the same weather event: `TSTM WIND`, `THUNDERSTORM WIND`, and `THUNDERSTORM WINDS`.
+Thus, a normalization joining these values makes sense.
+
+```{r top_ten_event_types}
+by_evt_count[1:10, 'EVTYPE']
+```
+
+### Fatalities and Injuries
+
+The given data for fatalities and injuries does not indicate any need for preprocessing.
+
+```{r, fatalaties_and_injuries}
+summary(raw_data[, c('FATALITIES', 'INJURIES')])
+```
+
+### Property Damage
+
+Property damage is expressed via two different columns: `PROPDMG` and `PROPDMGEXP`
+
+- `PROPDMG` provides a numeric value
+- `PROPDMGEXP` defines how the value of `PROPDMG` has to be multiplied
+
+For `PROPDMGEXP` the following values can be found:
+
+```{r propdmgexp}
+unique(raw_data$PROPDMGEXP)
+```
+
+The provided documentation does not explain how all of these values should
+be interpreted.
+The frequency of values indicates that it is safe to focus
+only on the following values (assuming the common interpretation)
+
+- `B` (billion),
+- `M` (million),
+- `K` (thousand),
+- `H` (hundred)
+
+```{r tbl_propdmgexp}
+table(raw_data$PROPDMGEXP)
+```
+> Note: there are samples in lower and upper case.
+
+### Crop Damage
+
+Crop damage is expressed via two different columns: `CROPDMG` and `CROPDMGEXP`
+
+- `CROPDMG` provides a numeric value
+- `CROPDMGEXP` defines how the value of `CROPDMG` has to be multiplied
+
+For `CROPDMGEXP` the following values can be found:
+
+```{r cropdmgexp}
+unique(raw_data$CROPDMGEXP)
+```
+
+Similar to `PROPDMGEXP` there are values which are difficult to interpret.
+
+```{r tbl_cropdmgexp}
+table(raw_data$CROPDMGEXP)
+```
+
+The table of frequencies indicates that it is admissible to focus on these values:
+
+- `B` (billion),
+- `M` (million),
+- `K` (thousand),
+- `H` (hundred)
+
+> Note: similar to `PROPDMGEXP` there are values in lower and upper case
+
+## Data Preprocessing
+
+From the Exploratory Data Analysis the following actions are indicated:
+
+- Selecting relevant columns
+- Removing rows without EVTYPE
+- Joining EVTYPE variants for "THUNDERSTORM WIND"
+- Subsetting to the Top-Ten Events
+
+```{r pre_processing}
+data <- raw_data %>%
+  select(EVTYPE, FATALITIES, INJURIES, PROPDMG, PROPDMGEXP, CROPDMG, CROPDMGEXP) %>%
+  filter(EVTYPE != "?") %>%
+  mutate(EVTYPE = case_when(
+    EVTYPE %in% c("TSTM WIND", "THUNDERSTORM WIND", "THUNDERSTORM WINDS") ~ "THUNDERSTORM WIND",
+    TRUE ~ EVTYPE)
+  )
+data_by_event_count <- data %>% group_by(EVTYPE) %>% summarise(n = n()) %>% arrange(desc(n))
+top_ten_events <- data_by_event_count[1:10,]$EVTYPE
+top_ten_events_data = data %>% filter(EVTYPE %in% top_ten_events)
+```
+
+## Impact on Public Health
+
+The top three weather events with respect to injuries and fatalities are
+tornados, floods, and thunderstorm winds.
+With respect to only fatalities they are tornados, flash floods, and lightings.
+
+```{r impact_on_public_health}
+  top_ten_events_data %>%
+  group_by(EVTYPE) %>%
+  summarise(total_injuries = sum(INJURIES),
+            total_fatalities = sum(FATALITIES),
+            total_casualities = sum(INJURIES + FATALITIES)) %>%
+  arrange(desc(total_casualities))
+```
+**Impact on Public Health**: tornados are the source for most injuries as well as fatalities.
+
+## Impact on Economy
+
+The top three weather events with respect to economic consequences are floods, tornados, and hails.
+With respect to just property damage they are floods, tornados, and flash floods.
+With respect to just crop damage they are floods, hail, and flash floods.
+
+```{r impact_on_economy}
+  top_ten_events_data %>%
+  mutate(
+    property_damage = case_when(
+      str_detect(PROPDMGEXP, regex('B', ignore_case = TRUE)) ~ 1000000000 * PROPDMG,
+      str_detect(PROPDMGEXP, regex('M', ignore_case = TRUE)) ~ 1000000 * PROPDMG,
+      str_detect(PROPDMGEXP, regex('K', ignore_case = TRUE)) ~ 1000 * PROPDMG,
+      str_detect(PROPDMGEXP, regex('H', ignore_case = TRUE)) ~ 100 * PROPDMG,
+      TRUE ~ 0
+    ),
+    crop_damage = case_when(
+      str_detect(CROPDMGEXP, regex('B', ignore_case = TRUE)) ~ 1000000000 * CROPDMG,
+      str_detect(CROPDMGEXP, regex('M', ignore_case = TRUE)) ~ 1000000 * CROPDMG,
+      str_detect(CROPDMGEXP, regex('K', ignore_case = TRUE)) ~ 1000 * CROPDMG,
+      str_detect(CROPDMGEXP, regex('H', ignore_case = TRUE)) ~ 100 * CROPDMG,
+      TRUE ~ 0
+    )
+  ) %>%
+  group_by(EVTYPE) %>%
+  summarise(
+    total_property_damage = sum(property_damage),
+    total_crop_damage = sum(crop_damage),
+    total_damage = sum(property_damage + crop_damage)
+  ) %>%
+  arrange(desc(total_damage)) %>%
+  mutate(
+    total_property_damage = paste(round(total_property_damage / 1000000000, digits = 2) , ' B'),
+    total_crop_damage = paste(round(total_crop_damage / 1000000000, digits = 2) , ' B'),
+    total_damage = paste(round(total_damage / 1000000000, digits = 2) , ' B'),
+  )
+```
+**Economic Consequences**: floods are the source for most property and crop damages.
+
+## Result
+
+The impact of weather events on public health and economy across the United States have
+been investigated. The analysis reveals that tornados have the greatest impact on public health,
+while floods have the greatest impact on economy.
+
+# Appendix
+
+## List of Event Types
+
+```{r event_types}
+sort(unique(raw_data$EVTYPE))
+```
